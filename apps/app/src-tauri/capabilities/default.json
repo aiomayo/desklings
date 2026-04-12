@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the deskling overlay window",
+  "windows": ["deskling-*"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-position",
+    "core:window:allow-set-ignore-cursor-events",
+    "core:window:allow-current-monitor",
+    "core:event:default",
+    "core:menu:default",
+    "core:tray:default",
+    "core:window:allow-set-size"
+  ]
+}
