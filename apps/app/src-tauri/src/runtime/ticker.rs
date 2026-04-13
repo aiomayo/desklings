@@ -132,9 +132,15 @@ fn ticker_loop(
             tick_started,
         );
 
-        let mouse_state = mouse.snapshot();
-        let release_edge = mouse_state.release_count != last_release_count;
-        last_release_count = mouse_state.release_count;
+        let left_down = mouse.left_down();
+        let release_edge = if mouse.is_active() {
+            let count = mouse.snapshot().release_count;
+            let edge = count != last_release_count;
+            last_release_count = count;
+            edge
+        } else {
+            prev_pressed && !left_down
+        };
         let cursor = cursor_position();
 
         let (view, should_raise_to_front) = {
@@ -178,7 +184,7 @@ fn ticker_loop(
 
                 let now = now_secs();
 
-                if mouse_state.left_down
+                if left_down
                     && !prev_pressed
                     && cursor_on_sprite
                     && arbiter.should_claim(instance_id)
@@ -188,7 +194,7 @@ fn ticker_loop(
                     arbiter.push_top(instance_id);
                     should_raise_to_front = true;
                 }
-                if mouse_state.left_down && state_machine.mode() == Mode::Dragging {
+                if left_down && state_machine.mode() == Mode::Dragging {
                     drag.update(physics, &cfg.drag, cx, cy, now);
                     physics.rebind_active_monitor_if_needed(&layout);
                 }
@@ -218,7 +224,7 @@ fn ticker_loop(
             (view, should_raise_to_front)
         };
 
-        prev_pressed = mouse_state.left_down;
+        prev_pressed = left_down;
 
         last_sprite = Some(view.sprite.clone());
         last_flip = view.flip;

@@ -44,6 +44,13 @@ pub fn run() -> DesklingResult<()> {
             }
 
             let settings = Arc::new(SettingsStore::load(app.handle())?);
+
+            #[cfg(target_os = "macos")]
+            if !input::mouse::is_accessibility_trusted() {
+                warn!("accessibility permission not granted; prompting user");
+                input::mouse::prompt_accessibility_trust();
+            }
+
             let mouse = MouseHook::spawn();
             let arbiter = Arc::new(CursorArbiter::new());
 

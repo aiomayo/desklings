@@ -4,14 +4,74 @@ use std::thread::JoinHandle;
 
 use mouce::common::{MouseButton, MouseEvent};
 use mouce::{Mouse as MouceManager, MouseActions};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::util::lock;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MouseButtonState {
-    pub left_down: bool,
     pub release_count: u64,
+}
+
+#[cfg(target_os = "macos")]
+pub fn is_accessibility_trusted() -> bool {
+    extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+    }
+    unsafe { AXIsProcessTrusted() }
+}
+
+#[cfg(target_os = "macos")]
+pub fn prompt_accessibility_trust() -> bool {
+    use std::ffi::c_void;
+    extern "C" {
+        fn CFStringCreateWithCString(
+            alloc: *const c_void,
+            c_str: *const u8,
+            encoding: u32,
+        ) -> *const c_void;
+        fn CFDictionaryCreate(
+            alloc: *const c_void,
+            keys: *const *const c_void,
+            values: *const *const c_void,
+            count: isize,
+            key_cbs: *const c_void,
+            val_cbs: *const c_void,
+        ) -> *const c_void;
+        fn CFRelease(cf: *const c_void);
+        fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+        static kCFTypeDictionaryKeyCallBacks: c_void;
+        static kCFTypeDictionaryValueCallBacks: c_void;
+        static kCFBooleanTrue: *const c_void;
+    }
+    const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
+    unsafe {
+        let key = CFStringCreateWithCString(
+            std::ptr::null(),
+            b"AXTrustedCheckOptionPrompt\0".as_ptr(),
+            K_CF_STRING_ENCODING_UTF8,
+        );
+        let keys = [key];
+        let values = [kCFBooleanTrue];
+        let dict = CFDictionaryCreate(
+            std::ptr::null(),
+            keys.as_ptr(),
+            values.as_ptr(),
+            1,
+            std::ptr::addr_of!(kCFTypeDictionaryKeyCallBacks),
+            std::ptr::addr_of!(kCFTypeDictionaryValueCallBacks),
+        );
+        let result = AXIsProcessTrustedWithOptions(dict);
+        CFRelease(dict);
+        CFRelease(key);
+        result
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn poll_left_mouse_button() -> bool {
+    use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGMouseButton};
+    CGEventSource::button_state(CGEventSourceStateID::CombinedSessionState, CGMouseButton::Left)
 }
 
 #[derive(Debug, Default)]
@@ -39,6 +99,7 @@ impl Shutdown {
 struct MouseHookInner {
     left_down: AtomicBool,
     release_count: AtomicU64,
+    hook_active: AtomicBool,
     shutdown: Shutdown,
 }
 
@@ -54,6 +115,7 @@ impl MouseHook {
         let inner = Arc::new(MouseHookInner {
             left_down: AtomicBool::new(false),
             release_count: AtomicU64::new(0),
+            hook_active: AtomicBool::new(false),
             shutdown: Shutdown::default(),
         });
 
@@ -72,8 +134,25 @@ impl MouseHook {
 
     pub fn snapshot(&self) -> MouseButtonState {
         MouseButtonState {
-            left_down: self.inner.left_down.load(Ordering::Acquire),
             release_count: self.inner.release_count.load(Ordering::Acquire),
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.inner.hook_active.load(Ordering::Acquire)
+    }
+
+    pub fn left_down(&self) -> bool {
+        if self.is_active() {
+            return self.inner.left_down.load(Ordering::Acquire);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            poll_left_mouse_button()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.inner.left_down.load(Ordering::Acquire)
         }
     }
 }
@@ -90,6 +169,14 @@ impl Drop for MouseHook {
 }
 
 fn run_hook(inner: &Arc<MouseHookInner>) {
+    #[cfg(target_os = "macos")]
+    if !is_accessibility_trusted() {
+        warn!("accessibility permission not granted; global mouse hook skipped");
+        inner.hook_active.store(false, Ordering::Release);
+        inner.shutdown.wait();
+        return;
+    }
+
     let mut manager = MouceManager::new();
     let cb_inner = Arc::clone(inner);
     let hook_result = manager.hook(Box::new(move |event| {
@@ -103,9 +190,11 @@ fn run_hook(inner: &Arc<MouseHookInner>) {
 
     if let Err(e) = hook_result {
         error!(error = ?e, "failed to install global mouse hook");
+        inner.hook_active.store(false, Ordering::Release);
         return;
     }
 
+    inner.hook_active.store(true, Ordering::Release);
     info!("mouse hook installed");
 
     inner.shutdown.wait();
