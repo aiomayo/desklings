@@ -5,7 +5,7 @@ on:
     types: [published]
 
 jobs:
-  build-tauri:
+  publish-tauri:
     permissions:
       contents: write
 
@@ -13,56 +13,59 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: 'macos-latest'
-            args: '--target aarch64-apple-darwin'
-          - platform: 'macos-latest'
-            args: '--target x86_64-apple-darwin'
-          - platform: 'ubuntu-22.04'
+          - platform: macos-latest
+            args: '--target universal-apple-darwin'
+            rust_targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
+          - platform: windows-latest
             args: ''
-          - platform: 'windows-latest'
+            rust_targets: ''
+          - platform: ubuntu-22.04
             args: ''
+            rust_targets: ''
 
     runs-on: ${{ matrix.platform }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: setup node
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
-      - name: setup bun
-        uses: oven-sh/setup-bun@v1
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
-      - name: install frontend dependencies
-        working-directory: apps/app
-        run: bun install
-
-      - name: install Rust stable
+      - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.rust_targets }}
 
-      - name: install dependencies (ubuntu only)
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/app/src-tauri -> target
+
+      - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - name: install tauri cli
-        run: cargo install tauri-cli
-
-      - name: build tauri app
+      - name: Install frontend dependencies
         working-directory: apps/app
-        run: cargo tauri build ${{ matrix.args }}
+        run: bun install --frozen-lockfile
 
-      - name: upload release assets
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ github.event.release.tag_name }}
-          files: |
-            apps/app/src-tauri/target/release/bundle/**/*
+      - name: Build and upload Tauri app
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/app
+          tauriScript: bunx tauri
+          tagName: ${{ github.event.release.tag_name }}
+          releaseName: ${{ github.event.release.name }}
+          releaseId: ${{ github.event.release.id }}
+          args: ${{ matrix.args }}
